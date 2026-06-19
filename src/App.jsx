@@ -1,70 +1,81 @@
-import { useState, useRef, useEffect, useCallback } from 'react'
+import { useState, useRef, useCallback } from 'react'
 import './App.css'
 
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000'
 
-function useSpeech() {
+function useAudio() {
   const [falando, setFalando] = useState(false)
   const [pausado, setPausado] = useState(false)
   const [progresso, setProgresso] = useState(0)
-  const utterRef = useRef(null)
-  const textoRef = useRef('')
-  const posRef = useRef(0)
-  const velocidadeRef = useRef(1)
+  const audioRef = useRef(null)
 
   const parar = useCallback(() => {
-    window.speechSynthesis.cancel()
+    if (audioRef.current) {
+      audioRef.current.pause()
+      audioRef.current.currentTime = 0
+      audioRef.current = null
+    }
     setFalando(false)
     setPausado(false)
     setProgresso(0)
-    posRef.current = 0
-  }, [])
-
-  const falar = useCallback((texto, velocidade = 1) => {
-    window.speechSynthesis.cancel()
-    textoRef.current = texto
-    velocidadeRef.current = velocidade
-    posRef.current = 0
-
-    const utter = new SpeechSynthesisUtterance(texto)
-    utter.lang = 'pt-BR'
-    utter.rate = velocidade
-
-    utter.onboundary = (e) => {
-      if (e.name === 'word') {
-        posRef.current = e.charIndex
-        setProgresso(Math.round((e.charIndex / texto.length) * 100))
-      }
-    }
-
-    utter.onend = () => {
-      setFalando(false)
-      setPausado(false)
-      setProgresso(100)
-    }
-
-    utter.onerror = () => {
-      setFalando(false)
-      setPausado(false)
-    }
-
-    utterRef.current = utter
-    window.speechSynthesis.speak(utter)
-    setFalando(true)
-    setPausado(false)
   }, [])
 
   const pausarRetomar = useCallback(() => {
+    if (!audioRef.current) return
     if (pausado) {
-      window.speechSynthesis.resume()
+      audioRef.current.play()
       setPausado(false)
     } else {
-      window.speechSynthesis.pause()
+      audioRef.current.pause()
       setPausado(true)
     }
   }, [pausado])
 
-  useEffect(() => () => window.speechSynthesis.cancel(), [])
+  const falar = useCallback(async (texto, onError) => {
+    parar()
+    setFalando(true)
+    setPausado(false)
+    setProgresso(0)
+
+    try {
+      const res = await fetch(`${API_URL}/sintetizar-audio`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ texto }),
+      })
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}))
+        throw new Error(err.detail || `Erro ${res.status}`)
+      }
+      const blob = await res.blob()
+      const url = URL.createObjectURL(blob)
+      const audio = new Audio(url)
+      audioRef.current = audio
+
+      audio.ontimeupdate = () => {
+        if (audio.duration) {
+          setProgresso(Math.round((audio.currentTime / audio.duration) * 100))
+        }
+      }
+      audio.onended = () => {
+        setFalando(false)
+        setPausado(false)
+        setProgresso(100)
+        URL.revokeObjectURL(url)
+      }
+      audio.onerror = () => {
+        setFalando(false)
+        setPausado(false)
+        URL.revokeObjectURL(url)
+      }
+
+      await audio.play()
+    } catch (err) {
+      setFalando(false)
+      setPausado(false)
+      if (onError) onError(err.message)
+    }
+  }, [parar])
 
   return { falando, pausado, progresso, falar, pausarRetomar, parar }
 }
@@ -74,11 +85,11 @@ export default function App() {
   const [preview, setPreview] = useState(null)
   const [texto, setTexto] = useState('')
   const [loading, setLoading] = useState(false)
+  const [loadingAudio, setLoadingAudio] = useState(false)
   const [erro, setErro] = useState(null)
-  const [velocidade, setVelocidade] = useState(0.9)
   const inputRef = useRef()
 
-  const { falando, pausado, progresso, falar, pausarRetomar, parar } = useSpeech()
+  const { falando, pausado, progresso, falar, pausarRetomar, parar } = useAudio()
 
   const handleImagem = (e) => {
     const file = e.target.files[0]
@@ -121,12 +132,14 @@ export default function App() {
     }
   }
 
-  const ouvir = () => {
+  const ouvir = async () => {
     if (falando) {
       pausarRetomar()
-    } else {
-      falar(texto, velocidade)
+      return
     }
+    setLoadingAudio(true)
+    await falar(texto, (msg) => setErro(msg))
+    setLoadingAudio(false)
   }
 
   return (
@@ -187,23 +200,6 @@ export default function App() {
               <div className="texto-conteudo">{texto}</div>
 
               <div className="audio-controles">
-                <div className="velocidade-row">
-                  <span>🐢</span>
-                  <input
-                    type="range"
-                    min="0.5"
-                    max="1.5"
-                    step="0.1"
-                    value={velocidade}
-                    onChange={(e) => setVelocidade(parseFloat(e.target.value))}
-                    disabled={falando}
-                  />
-                  <span>🐇</span>
-                  <span style={{ minWidth: 36, textAlign: 'right', fontSize: '0.85rem' }}>
-                    {velocidade.toFixed(1)}x
-                  </span>
-                </div>
-
                 {falando && (
                   <div className="progresso-bar">
                     <div className="progresso-fill" style={{ width: `${progresso}%` }} />
@@ -211,8 +207,16 @@ export default function App() {
                 )}
 
                 <div className="audio-btns">
-                  <button className={`btn-ouvir${pausado ? ' pausado' : ''}`} onClick={ouvir}>
-                    {!falando ? '▶ Ouvir' : pausado ? '▶ Continuar' : '⏸ Pausar'}
+                  <button
+                    className={`btn-ouvir${pausado ? ' pausado' : ''}`}
+                    onClick={ouvir}
+                    disabled={loadingAudio}
+                  >
+                    {loadingAudio
+                      ? <><span className="spinner" /> Gerando áudio...</>
+                      : !falando ? '▶ Ouvir'
+                      : pausado ? '▶ Continuar'
+                      : '⏸ Pausar'}
                   </button>
                   {falando && (
                     <button className="btn-parar" onClick={parar}>⏹</button>
@@ -233,7 +237,7 @@ export default function App() {
       </main>
 
       <footer className="app-footer">
-        <p>Powered by Claude AI · Com amor à Nossa Senhora</p>
+        <p>Powered by Claude AI + ElevenLabs · Com amor à Nossa Senhora</p>
       </footer>
     </div>
   )

@@ -2,7 +2,10 @@ import os
 import base64
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
+from pydantic import BaseModel
 from anthropic import Anthropic
+from elevenlabs import ElevenLabs
 
 app = FastAPI(title="Leitor Nossa Senhora")
 
@@ -16,6 +19,10 @@ app.add_middleware(
 )
 
 client = Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
+eleven = ElevenLabs(api_key=os.environ["ELEVENLABS_API_KEY"])
+
+# Voz Camila — feminina, português brasileiro
+VOICE_ID = "IES0oEqb3pBYE7FgDrBV"
 
 SYSTEM_EXTRAIR = """Você é um assistente especializado em extrair texto de imagens de livros religiosos.
 
@@ -60,5 +67,31 @@ async def extrair_texto(imagem: UploadFile = File(...)):
 
         texto = resposta.content[0].text
         return {"texto": texto}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+class TextoAudioRequest(BaseModel):
+    texto: str
+
+
+@app.post("/sintetizar-audio")
+async def sintetizar_audio(req: TextoAudioRequest):
+    """Converte texto em áudio usando ElevenLabs."""
+    if not req.texto.strip():
+        raise HTTPException(status_code=400, detail="Texto vazio.")
+    try:
+        audio = eleven.text_to_speech.convert(
+            voice_id=VOICE_ID,
+            text=req.texto.strip(),
+            model_id="eleven_multilingual_v2",
+            output_format="mp3_44100_128",
+        )
+        audio_bytes = b"".join(audio)
+        return StreamingResponse(
+            iter([audio_bytes]),
+            media_type="audio/mpeg",
+            headers={"Content-Disposition": "inline; filename=audio.mp3"},
+        )
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
