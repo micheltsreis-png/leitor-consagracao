@@ -21,8 +21,8 @@ app.add_middleware(
 client = Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
 eleven = ElevenLabs(api_key=os.environ["ELEVENLABS_API_KEY"])
 
-# Voz Camila — feminina, português brasileiro
-VOICE_ID = "IES0oEqb3pBYE7FgDrBV"
+# Voz Rachel — feminina, clara, disponível em todos os planos
+VOICE_ID = "21m00Tcm4TlvDq8ikWAM"
 
 SYSTEM_EXTRAIR = """Você é um assistente especializado em extrair texto de imagens de livros religiosos.
 
