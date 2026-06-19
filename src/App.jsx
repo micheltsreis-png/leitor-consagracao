@@ -1,81 +1,43 @@
-import { useState, useRef, useCallback } from 'react'
+import { useState, useRef, useCallback, useEffect } from 'react'
 import './App.css'
 
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000'
 
-function useAudio() {
+function useSpeech() {
   const [falando, setFalando] = useState(false)
   const [pausado, setPausado] = useState(false)
   const [progresso, setProgresso] = useState(0)
-  const audioRef = useRef(null)
+  const utterRef = useRef(null)
 
   const parar = useCallback(() => {
-    if (audioRef.current) {
-      audioRef.current.pause()
-      audioRef.current.currentTime = 0
-      audioRef.current = null
-    }
+    window.speechSynthesis.cancel()
     setFalando(false)
     setPausado(false)
     setProgresso(0)
   }, [])
 
-  const pausarRetomar = useCallback(() => {
-    if (!audioRef.current) return
-    if (pausado) {
-      audioRef.current.play()
-      setPausado(false)
-    } else {
-      audioRef.current.pause()
-      setPausado(true)
+  const falar = useCallback((texto, velocidade = 0.9) => {
+    window.speechSynthesis.cancel()
+    const utter = new SpeechSynthesisUtterance(texto)
+    utter.lang = 'pt-BR'
+    utter.rate = velocidade
+    utter.onboundary = (e) => {
+      if (e.name === 'word') setProgresso(Math.round((e.charIndex / texto.length) * 100))
     }
-  }, [pausado])
-
-  const falar = useCallback(async (texto, onError) => {
-    parar()
+    utter.onend = () => { setFalando(false); setPausado(false); setProgresso(100) }
+    utter.onerror = () => { setFalando(false); setPausado(false) }
+    utterRef.current = utter
+    window.speechSynthesis.speak(utter)
     setFalando(true)
     setPausado(false)
-    setProgresso(0)
+  }, [])
 
-    try {
-      const res = await fetch(`${API_URL}/sintetizar-audio`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ texto }),
-      })
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({}))
-        throw new Error(err.detail || `Erro ${res.status}`)
-      }
-      const blob = await res.blob()
-      const url = URL.createObjectURL(blob)
-      const audio = new Audio(url)
-      audioRef.current = audio
+  const pausarRetomar = useCallback(() => {
+    if (pausado) { window.speechSynthesis.resume(); setPausado(false) }
+    else { window.speechSynthesis.pause(); setPausado(true) }
+  }, [pausado])
 
-      audio.ontimeupdate = () => {
-        if (audio.duration) {
-          setProgresso(Math.round((audio.currentTime / audio.duration) * 100))
-        }
-      }
-      audio.onended = () => {
-        setFalando(false)
-        setPausado(false)
-        setProgresso(100)
-        URL.revokeObjectURL(url)
-      }
-      audio.onerror = () => {
-        setFalando(false)
-        setPausado(false)
-        URL.revokeObjectURL(url)
-      }
-
-      await audio.play()
-    } catch (err) {
-      setFalando(false)
-      setPausado(false)
-      if (onError) onError(err.message)
-    }
-  }, [parar])
+  useEffect(() => () => window.speechSynthesis.cancel(), [])
 
   return { falando, pausado, progresso, falar, pausarRetomar, parar }
 }
@@ -85,11 +47,11 @@ export default function App() {
   const [preview, setPreview] = useState(null)
   const [texto, setTexto] = useState('')
   const [loading, setLoading] = useState(false)
-  const [loadingAudio, setLoadingAudio] = useState(false)
   const [erro, setErro] = useState(null)
+  const [velocidade, setVelocidade] = useState(0.9)
   const inputRef = useRef()
 
-  const { falando, pausado, progresso, falar, pausarRetomar, parar } = useAudio()
+  const { falando, pausado, progresso, falar, pausarRetomar, parar } = useSpeech()
 
   const handleImagem = (e) => {
     const file = e.target.files[0]
@@ -114,7 +76,6 @@ export default function App() {
     setErro(null)
     setTexto('')
     parar()
-
     try {
       const form = new FormData()
       form.append('imagem', imagem)
@@ -132,14 +93,9 @@ export default function App() {
     }
   }
 
-  const ouvir = async () => {
-    if (falando) {
-      pausarRetomar()
-      return
-    }
-    setLoadingAudio(true)
-    await falar(texto, (msg) => setErro(msg))
-    setLoadingAudio(false)
+  const ouvir = () => {
+    if (falando) pausarRetomar()
+    else falar(texto, velocidade)
   }
 
   return (
@@ -151,40 +107,23 @@ export default function App() {
       </header>
 
       <main className="app-main">
-
-        {/* Passo 1: Foto */}
         <div className="card">
           <div className="card-title">📷 Passo 1 — Fotografe a página</div>
           <div className="upload-area">
             {preview ? (
               <div className="preview-wrapper">
                 <img src={preview} alt="Página do livro" className="imagem-preview" />
-                <button type="button" className="btn-remover" onClick={removerImagem}>
-                  ✕ Remover foto
-                </button>
+                <button type="button" className="btn-remover" onClick={removerImagem}>✕ Remover foto</button>
               </div>
             ) : (
               <label className="btn-foto">
                 📷 Tirar foto da página
-                <input
-                  ref={inputRef}
-                  type="file"
-                  accept="image/*"
-                  capture="environment"
-                  onChange={handleImagem}
-                  hidden
-                />
+                <input ref={inputRef} type="file" accept="image/*" capture="environment" onChange={handleImagem} hidden />
               </label>
             )}
           </div>
-
           {imagem && !texto && (
-            <button
-              className="btn-extrair"
-              style={{ marginTop: 14 }}
-              onClick={extrairTexto}
-              disabled={loading}
-            >
+            <button className="btn-extrair" style={{ marginTop: 14 }} onClick={extrairTexto} disabled={loading}>
               {loading ? <><span className="spinner" /> Lendo texto...</> : '✨ Ler texto da foto'}
             </button>
           )}
@@ -192,43 +131,33 @@ export default function App() {
 
         {erro && <div className="alert erro">{erro}</div>}
 
-        {/* Passo 2: Texto + Áudio */}
         {texto && (
           <div className="card">
             <div className="card-title">🔊 Passo 2 — Ouça o texto</div>
             <div className="texto-box">
               <div className="texto-conteudo">{texto}</div>
-
               <div className="audio-controles">
+                <div className="velocidade-row">
+                  <span>🐢</span>
+                  <input type="range" min="0.5" max="1.5" step="0.1" value={velocidade}
+                    onChange={(e) => setVelocidade(parseFloat(e.target.value))} disabled={falando} />
+                  <span>🐇</span>
+                  <span style={{ minWidth: 36, textAlign: 'right', fontSize: '0.85rem' }}>{velocidade.toFixed(1)}x</span>
+                </div>
                 {falando && (
                   <div className="progresso-bar">
                     <div className="progresso-fill" style={{ width: `${progresso}%` }} />
                   </div>
                 )}
-
                 <div className="audio-btns">
-                  <button
-                    className={`btn-ouvir${pausado ? ' pausado' : ''}`}
-                    onClick={ouvir}
-                    disabled={loadingAudio}
-                  >
-                    {loadingAudio
-                      ? <><span className="spinner" /> Gerando áudio...</>
-                      : !falando ? '▶ Ouvir'
-                      : pausado ? '▶ Continuar'
-                      : '⏸ Pausar'}
+                  <button className={`btn-ouvir${pausado ? ' pausado' : ''}`} onClick={ouvir}>
+                    {!falando ? '▶ Ouvir' : pausado ? '▶ Continuar' : '⏸ Pausar'}
                   </button>
-                  {falando && (
-                    <button className="btn-parar" onClick={parar}>⏹</button>
-                  )}
+                  {falando && <button className="btn-parar" onClick={parar}>⏹</button>}
                 </div>
               </div>
-
-              <button
-                className="btn-extrair"
-                style={{ background: '#64748b' }}
-                onClick={() => { setTexto(''); removerImagem() }}
-              >
+              <button className="btn-extrair" style={{ background: '#64748b' }}
+                onClick={() => { setTexto(''); removerImagem() }}>
                 📷 Nova página
               </button>
             </div>
@@ -237,7 +166,7 @@ export default function App() {
       </main>
 
       <footer className="app-footer">
-        <p>Powered by Claude AI + ElevenLabs · Com amor à Nossa Senhora</p>
+        <p>Powered by Claude AI · Com amor à Nossa Senhora</p>
       </footer>
     </div>
   )
